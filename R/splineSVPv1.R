@@ -15,51 +15,72 @@ segment_validity_stat <- function(x, y, s, t, sigma) {
   
   stopifnot(
     length(x) == length(y),
-    1 <= s, s < t, t <= length(x),
+    1 <= s,
+    s < t,
+    t <= length(x),
     sigma > 0
   )
   
-  idx <- (s + 1):t
+  m <- t - s
   
-  # No possible internal knot
-  if (t - s <= 1) {
+  # The interval (s,t] contains m observations.
+  #
+  # If m <= 2, an affine function can interpolate all observations
+  # exactly, hence RSS0 = 0 and therefore T_{s,t} = 0.
+  if (m <= 2) {
     return(0)
   }
+  
+  idx <- (s + 1):t
   
   xs <- x[idx]
   ys <- y[idx]
   
-  # Null model:
-  # y_i = a + b x_i + error_i
-  X0 <- cbind(1, xs)
+  # ----------------------------------------------------------
+  # Null model: one affine line
+  # ----------------------------------------------------------
   
-  fit0 <- lm.fit(x = X0, y = ys)
+  X0 <- cbind(
+    intercept = 1,
+    x = xs
+  )
+  
+  fit0 <- lm.fit(X0, ys)
+  
   rss0 <- sum(fit0$residuals^2)
   
-  # Candidate internal knot indices
+  # ----------------------------------------------------------
+  # Alternative: one continuous internal slope change
+  #
+  # a + b*x + c*(x - x_r)_+
+  # ----------------------------------------------------------
+  
   candidate_r <- (s + 1):(t - 1)
   
-  best_rss1 <- Inf
+  rss1_values <- numeric(length(candidate_r))
   
-  for (r in candidate_r) {
+  for (j in seq_along(candidate_r)) {
     
-    # Continuous one-knot alternative:
-    #
-    # a + b*x + c*(x - x_r)_+
+    r <- candidate_r[j]
+    
     hinge <- pmax(xs - x[r], 0)
     
-    X1 <- cbind(1, xs, hinge)
+    X1 <- cbind(
+      intercept = 1,
+      x = xs,
+      hinge = hinge
+    )
     
-    fit1 <- lm.fit(x = X1, y = ys)
-    rss1 <- sum(fit1$residuals^2)
+    fit1 <- lm.fit(X1, ys)
     
-    if (rss1 < best_rss1) {
-      best_rss1 <- rss1
-    }
+    rss1_values[j] <- sum(fit1$residuals^2)
   }
   
-  # Numerical protection: theoretically rss1 <= rss0
-  improvement <- max(0, rss0 - best_rss1)
+  best_rss1 <- min(rss1_values)
+  
+  # Theoretically best_rss1 <= rss0.
+  # max(..., 0) protects against tiny numerical roundoff.
+  improvement <- max(rss0 - best_rss1, 0)
   
   improvement / sigma^2
 }
@@ -446,3 +467,172 @@ legend(
   lty = c(NA, 2, 1, NA),
   lwd = c(NA, 2, 2, 2)
 )
+
+
+result$tau
+result$K
+result$z
+result$cost
+result$number_partitions
+result$number_valid_partitions
+
+result$T
+
+
+x_test <- 1:6
+y_test <- c(1.1, 2.0, 3.2, 4.1, 5.0, 6.2)
+
+stopifnot(
+  segment_validity_stat(x_test, y_test, 1, 2, sigma = 1) == 0
+)
+
+stopifnot(
+  segment_validity_stat(x_test, y_test, 1, 3, sigma = 1) == 0
+)
+
+cat("Short-interval tests passed.\n")
+
+
+x_test <- 1:10
+y_line <- 2 + 3 * x_test
+
+T_line <- segment_validity_stat(
+  x = x_test,
+  y = y_line,
+  s = 1,
+  t = 10,
+  sigma = 1
+)
+
+print(T_line)
+
+stopifnot(abs(T_line) < 1e-10)
+
+cat("Perfect-line test passed.\n")
+
+x_test <- 1:10
+
+y_knot <- ifelse(
+  x_test <= 5,
+  x_test,
+  5 - 2 * (x_test - 5)
+)
+
+T_knot <- segment_validity_stat(
+  x = x_test,
+  y = y_knot,
+  s = 1,
+  t = 10,
+  sigma = 1
+)
+
+print(T_knot)
+
+stopifnot(T_knot > 0)
+
+cat("Slope-change test passed.\n")
+
+set.seed(123)
+
+x_test <- 1:12
+sigma_test <- 0.5
+
+y_test <- ifelse(
+  x_test <= 6,
+  0.4 * x_test,
+  2.4 - 0.8 * (x_test - 6)
+) + rnorm(12, sd = sigma_test)
+
+T1 <- segment_validity_stat(
+  x_test, y_test,
+  s = 1,
+  t = 12,
+  sigma = sigma_test
+)
+
+lambda <- 7
+
+T2 <- segment_validity_stat(
+  x_test,
+  lambda * y_test,
+  s = 1,
+  t = 12,
+  sigma = lambda * sigma_test
+)
+
+print(c(T1 = T1, T2 = T2))
+
+stopifnot(
+  abs(T1 - T2) < 1e-8
+)
+
+cat("Scale-invariance test passed.\n")
+
+
+validity_details <- function(x, y, s, t, sigma) {
+  
+  m <- t - s
+  
+  if (m <= 2) {
+    return(list(
+      rss0 = 0,
+      best_rss1 = 0,
+      best_r = NA_integer_,
+      T = 0
+    ))
+  }
+  
+  idx <- (s + 1):t
+  xs <- x[idx]
+  ys <- y[idx]
+  
+  X0 <- cbind(1, xs)
+  fit0 <- lm.fit(X0, ys)
+  rss0 <- sum(fit0$residuals^2)
+  
+  candidate_r <- (s + 1):(t - 1)
+  
+  rss1 <- numeric(length(candidate_r))
+  
+  for (j in seq_along(candidate_r)) {
+    
+    r <- candidate_r[j]
+    
+    hinge <- pmax(xs - x[r], 0)
+    
+    X1 <- cbind(1, xs, hinge)
+    
+    fit1 <- lm.fit(X1, ys)
+    
+    rss1[j] <- sum(fit1$residuals^2)
+  }
+  
+  j_best <- which.min(rss1)
+  
+  best_rss1 <- rss1[j_best]
+  best_r <- candidate_r[j_best]
+  
+  T <- max(rss0 - best_rss1, 0) / sigma^2
+  
+  list(
+    rss0 = rss0,
+    best_rss1 = best_rss1,
+    best_r = best_r,
+    T = T
+  )
+}
+details <- validity_details(
+  x = x_test,
+  y = y_test,
+  s = 1,
+  t = 12,
+  sigma = sigma_test
+)
+
+print(details)
+
+stopifnot(
+  details$best_rss1 <= details$rss0 + 1e-10
+)
+
+cat("Nested-model RSS test passed.\n")
